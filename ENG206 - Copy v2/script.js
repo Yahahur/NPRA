@@ -1,0 +1,474 @@
+document.addEventListener("DOMContentLoaded", () => {
+
+  /* ================= MAKER CONNECTION ================= */
+  const selectedMaker = localStorage.getItem("selectedMaker") || "HONDA";
+  document.title = selectedMaker;
+  document.querySelector("h1").textContent =
+    `NPRA MASTER SCHEDULE - ${selectedMaker}`;
+
+  const STORAGE_KEY = `NPRA_MASTER_SCHEDULE_${selectedMaker}`;
+
+  /* ================= ELEMENTS ================= */
+  const mainTableBody = document.querySelector("#mainTable tbody");
+
+  const addRowBtn = document.getElementById("addRowBtn");
+  const deleteRowBtn = document.getElementById("deleteRowBtn");
+  const clearDataBtn = document.getElementById("clearDataBtn");
+  const enableBlockSelect = document.getElementById("enableBlockSelect");
+
+  const searchInput = document.getElementById("searchInput");
+  const searchBtn = document.getElementById("searchBtn");
+  const resetBtn = document.getElementById("resetBtn");
+
+  const dateFrom = document.getElementById("dateFrom");
+  const dateTo = document.getElementById("dateTo");
+  const dateSearchBtn = document.getElementById("dateSearchBtn");
+  const dateResetBtn = document.getElementById("dateResetBtn");
+
+  const exportBtn = document.getElementById("exportData");
+  const importBtn = document.getElementById("importBtn");
+  const importInput = document.getElementById("importData");
+
+  let selectedBlock = null;
+
+  /* ================= UTIL ================= */
+  function formatDate(value) {
+    if (!value) return "—";
+    const m = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const d = new Date(value);
+    if (isNaN(d)) return "—";
+    return `${m[d.getMonth()]}-${String(d.getDate()).padStart(2, "0")}-${d.getFullYear()}`;
+  }
+
+  function parseDateOnly(value) {
+    if (!value) return null;
+    const d = new Date(value);
+    if (isNaN(d)) return null;
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function getBlocks() {
+    const rows = Array.from(mainTableBody.rows);
+    const blocks = [];
+    for (let i = 0; i < rows.length; i += 4) {
+      blocks.push(rows.slice(i, i + 4).filter(Boolean));
+    }
+    return blocks;
+  }
+
+  function getStatusSelectsInBlock(blockRows) {
+    return blockRows.flatMap(row => Array.from(row.querySelectorAll(".status-select")));
+  }
+
+  function getDateCellsByType(row) {
+    const dateCells = Array.from(row.querySelectorAll(".date-cell"));
+    if (dateCells.length === 0) return { npra: null, target: null, recovery: null };
+
+    // First row in each block has NPRA + TARGET + RECOVERY
+    if (dateCells.length >= 3) {
+      return { npra: dateCells[0], target: dateCells[1], recovery: dateCells[2] };
+    }
+
+    // Other rows have TARGET + RECOVERY
+    if (dateCells.length >= 2) {
+      return { npra: null, target: dateCells[0], recovery: dateCells[1] };
+    }
+
+    return { npra: null, target: dateCells[0], recovery: null };
+  }
+
+  function tagDateCellTypes() {
+    getBlocks().forEach(blockRows => {
+      blockRows.forEach(row => {
+        const { npra, target, recovery } = getDateCellsByType(row);
+        if (npra) {
+          npra.classList.add("npra-date");
+          npra.classList.remove("target-date", "recovery-date");
+        }
+        if (target) {
+          target.classList.add("target-date");
+          target.classList.remove("npra-date");
+        }
+        if (recovery) {
+          recovery.classList.add("recovery-date");
+          recovery.classList.remove("npra-date");
+        }
+      });
+    });
+  }
+
+  /* ================= STATUS COLOR ================= */
+  function applyStatusLogic(select) {
+    const td = select.closest("td");
+    const val = select.value;
+
+    td.style.backgroundColor =
+      val === "Open" ? "#f8d7da" :
+      val === "Close" ? "#d4edda" :
+      val === "Cancelled" ? "#fff3cd" :
+      val === "Rejected" ? "#f5c6cb" :
+      "";
+  }
+
+  function hydrateStatusSelect(select) {
+    const savedStatus = select.dataset.status;
+    if (savedStatus) {
+      select.value = savedStatus;
+    }
+    select.dataset.status = select.value;
+  }
+
+
+  function isResolvedStatus(status) {
+    return ["Close", "Cancelled", "Rejected"].includes(status);
+  }
+
+  function getStatusDateColor(status) {
+    if (status === "Close") return "#d4edda";
+    if (status === "Cancelled") return "#fff3cd";
+    if (status === "Rejected") return "#f5c6cb";
+    return "";
+  }
+
+  function applyDateColorByStatus(select) {
+    const row = select.closest("tr");
+    if (!row) return;
+
+    const { target, recovery } = getDateCellsByType(row);
+    const status = select.value;
+
+    [target, recovery].forEach(td => {
+      if (!td) return;
+      if (isResolvedStatus(status)) {
+        td.style.backgroundColor = getStatusDateColor(status);
+        td.title = `${status}`;
+      }
+    });
+  }
+
+  /* ================= DATE WARNING ================= */
+  function updateDateWarnings() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Reset only target/recovery columns (NPRA must not turn red)
+    document.querySelectorAll(".target-date, .recovery-date").forEach(td => {
+      td.style.backgroundColor = "";
+      td.title = "";
+    });
+
+    // Apply warning colors for due/overdue target/recovery cells
+    document.querySelectorAll(".target-date, .recovery-date").forEach(td => {
+      const row = td.closest("tr");
+      const statusSelect = row ? row.querySelector(".status-select") : null;
+      if (statusSelect && isResolvedStatus(statusSelect.value)) {
+        return;
+      }
+
+      const raw = td.dataset.raw;
+      if (!raw) return;
+
+      const target = parseDateOnly(raw);
+      if (!target) return;
+
+      const diff = Math.ceil((target - today) / 86400000);
+      if (diff <= 5) {
+        td.style.backgroundColor = "#f8d7da";
+        td.title = diff >= 0 ? `Due in ${diff} day(s)` : "Overdue";
+      }
+    });
+
+    // Resolved rows override warning with status-specific colors.
+    document.querySelectorAll(".status-select").forEach(select => {
+      applyDateColorByStatus(select);
+    });
+  }
+
+  /* ================= RENUMBER ================= */
+  function renumberItems() {
+    let count = 1;
+    for (let i = 0; i < mainTableBody.rows.length; i += 4) {
+      if (mainTableBody.rows[i]) {
+        mainTableBody.rows[i].cells[0].innerText = count++;
+      }
+    }
+  }
+
+  /* ================= SAVE / LOAD ================= */
+  function syncSelectValues() {
+    document.querySelectorAll(".status-select").forEach(select => {
+      select.dataset.status = select.value;
+      [...select.options].forEach(opt => {
+        opt.selected = opt.value === select.value;
+      });
+    });
+  }
+
+  function saveTable() {
+    syncSelectValues();
+    localStorage.setItem(STORAGE_KEY, mainTableBody.innerHTML);
+  }
+
+  function loadTable() {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) return;
+    mainTableBody.innerHTML = data;
+
+    tagDateCellTypes();
+
+    document.querySelectorAll(".status-select").forEach(select => {
+      hydrateStatusSelect(select);
+      applyStatusLogic(select);
+    });
+
+    updateDateWarnings();
+    renumberItems();
+  }
+
+  /* ================= FILTERS ================= */
+  function blockText(blockRows) {
+    return blockRows.map(row => row.textContent.toLowerCase()).join(" ");
+  }
+
+  function blockInDateRange(blockRows, fromDate, toDate) {
+    const allDateCells = blockRows.flatMap(row => Array.from(row.querySelectorAll(".date-cell")));
+    const raws = allDateCells.map(td => td.dataset.raw).filter(Boolean);
+
+    if (raws.length === 0) return false;
+
+    return raws.some(raw => {
+      const d = parseDateOnly(raw);
+      if (!d) return false;
+      if (fromDate && d < fromDate) return false;
+      if (toDate && d > toDate) return false;
+      return true;
+    });
+  }
+
+  function applyFilters() {
+    const query = (searchInput.value || "").trim().toLowerCase();
+    const fromDate = parseDateOnly(dateFrom.value);
+    const toDate = parseDateOnly(dateTo.value);
+
+    getBlocks().forEach(blockRows => {
+      const matchesSearch = !query || blockText(blockRows).includes(query);
+      const matchesDate = (!fromDate && !toDate) || blockInDateRange(blockRows, fromDate, toDate);
+      const visible = matchesSearch && matchesDate;
+
+      blockRows.forEach(row => {
+        row.style.display = visible ? "" : "none";
+      });
+    });
+  }
+
+  /* ================= BLOCK SELECT ================= */
+  function clearSelectedBlockUI() {
+    document.querySelectorAll("tr.selected-block").forEach(tr => tr.classList.remove("selected-block"));
+  }
+
+  function setSelectedBlockFromRow(row) {
+    const rows = Array.from(mainTableBody.rows);
+    const index = rows.indexOf(row);
+    if (index === -1) return;
+
+    const start = Math.floor(index / 4) * 4;
+    const blockRows = rows.slice(start, start + 4);
+
+    clearSelectedBlockUI();
+    blockRows.forEach(r => r.classList.add("selected-block"));
+    selectedBlock = blockRows[0] || null;
+  }
+
+  /* ================= ADD BLOCK ================= */
+  addRowBtn.addEventListener("click", () => {
+    const line = prompt("Enter Line / Event:");
+    const process = prompt("Enter Process:");
+    const product = prompt("Enter Product:");
+    if (!line || !process || !product) return;
+
+    const statusHTML = `
+      <select class="status-select">
+        <option value="Open">Open</option>
+        <option value="Close">Close</option>
+        <option value="Cancelled">Cancelled</option>
+        <option value="Rejected">Rejected</option>
+        <option value="—">—</option>
+      </select>`;
+
+    for (let i = 0; i < 4; i++) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = i === 0 ? `
+        <td rowspan="4"></td>
+        <td rowspan="4" class="date-cell npra-date" data-raw="">—</td>
+        <td rowspan="4">${line}</td>
+        <td rowspan="4">${process}</td>
+        <td rowspan="4">${product}</td>
+        <td rowspan="4">—</td>
+        <td rowspan="4">—</td>
+        <td rowspan="2" class="vertical-text">OCCURRENCE</td>
+        <td>—</td><td>—</td>
+        <td class="date-cell target-date" data-raw="">—</td>
+        <td class="status-cell">${statusHTML}</td>
+        <td class="date-cell recovery-date" data-raw="">—</td>
+      ` : `
+        ${i === 2 ? `<td rowspan="2" class="vertical-text">OUTFLOW</td>` : ""}
+        <td>—</td><td>—</td>
+        <td class="date-cell target-date" data-raw="">—</td>
+        <td class="status-cell">${statusHTML}</td>
+        <td class="date-cell recovery-date" data-raw="">—</td>
+      `;
+      mainTableBody.appendChild(tr);
+    }
+
+    renumberItems();
+    updateDateWarnings();
+    saveTable();
+    applyFilters();
+  });
+
+  /* ================= INLINE EDIT (TEXT ONLY, NO STATUS) ================= */
+  document.addEventListener("dblclick", e => {
+    const td = e.target.closest("td");
+
+    if (
+      !td ||
+      td.classList.contains("vertical-text") ||
+      td.classList.contains("status-cell") ||
+      td.querySelector("input") ||
+      td.querySelector("select")
+    ) return;
+
+    const ta = document.createElement("textarea");
+    ta.value = td.textContent === "—" ? "" : td.textContent;
+    td.textContent = "";
+    td.appendChild(ta);
+    ta.focus();
+
+    ta.onblur = () => {
+      td.textContent = ta.value.trim() || "—";
+      saveTable();
+      applyFilters();
+    };
+  });
+
+  /* ================= INLINE DATE EDIT ================= */
+  document.addEventListener("dblclick", e => {
+    const td = e.target.closest(".date-cell");
+    if (!td || td.querySelector("input")) return;
+
+    const input = document.createElement("input");
+    input.type = "date";
+    input.value = td.dataset.raw || "";
+    td.textContent = "";
+    td.appendChild(input);
+    input.focus();
+
+    input.onchange = input.onblur = () => {
+      td.dataset.raw = input.value;
+      td.textContent = formatDate(input.value);
+      updateDateWarnings();
+      saveTable();
+      applyFilters();
+    };
+  });
+
+  /* ================= BLOCK CLICK SELECT ================= */
+  mainTableBody.addEventListener("click", e => {
+    if (!enableBlockSelect || !enableBlockSelect.checked) return;
+    if (e.target.closest("input, textarea, select, button")) return;
+    const row = e.target.closest("tr");
+    if (!row) return;
+    setSelectedBlockFromRow(row);
+  });
+
+  if (enableBlockSelect) {
+    enableBlockSelect.addEventListener("change", () => {
+      if (!enableBlockSelect.checked) {
+        clearSelectedBlockUI();
+        selectedBlock = null;
+      }
+    });
+  }
+
+  /* ================= STATUS CHANGE ================= */
+  document.addEventListener("change", e => {
+    if (e.target.classList.contains("status-select")) {
+      const allowed = ["Open", "Close", "Cancelled", "Rejected", "—"];
+      if (!allowed.includes(e.target.value)) e.target.value = "Open";
+      e.target.dataset.status = e.target.value;
+      applyStatusLogic(e.target);
+      updateDateWarnings();
+      saveTable();
+    }
+  });
+
+  /* ================= SEARCH / DATE FILTER ================= */
+  searchBtn.addEventListener("click", applyFilters);
+  resetBtn.addEventListener("click", () => {
+    searchInput.value = "";
+    applyFilters();
+  });
+
+  dateSearchBtn.addEventListener("click", applyFilters);
+  dateResetBtn.addEventListener("click", () => {
+    dateFrom.value = "";
+    dateTo.value = "";
+    applyFilters();
+  });
+
+  /* ================= DELETE BLOCK ================= */
+  deleteRowBtn.addEventListener("click", () => {
+    if (!selectedBlock) return alert("Enable block select, then click any row in the block first.");
+    if (!confirm("Delete this block?")) return;
+
+    let r = selectedBlock;
+    for (let i = 0; i < 4 && r; i++) {
+      const next = r.nextElementSibling;
+      r.remove();
+      r = next;
+    }
+
+    selectedBlock = null;
+    renumberItems();
+    saveTable();
+    applyFilters();
+  });
+
+  /* ================= EXPORT / IMPORT ================= */
+  exportBtn.onclick = () => {
+    const blob = new Blob([localStorage.getItem(STORAGE_KEY) || ""], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${selectedMaker}_NPRA.json`;
+    a.click();
+  };
+
+  importBtn.onclick = () => importInput.click();
+
+  importInput.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      localStorage.setItem(STORAGE_KEY, r.result);
+      loadTable();
+      applyFilters();
+    };
+    r.readAsText(file);
+  };
+
+  /* ================= CLEAR ================= */
+  clearDataBtn.onclick = () => {
+    if (confirm("Clear all saved data for " + selectedMaker + "?")) {
+      localStorage.removeItem(STORAGE_KEY);
+      mainTableBody.innerHTML = "";
+      selectedBlock = null;
+    }
+  };
+
+  /* ================= INITIAL LOAD ================= */
+  loadTable();
+  applyFilters();
+
+});
